@@ -6,11 +6,12 @@ pipeline:
   version: "1.0"
 
 llm:
-  provider: "openai"          # openai | ollama
-  model: "gpt-4o"             # gpt-4o | gpt-4-turbo | llama3 (ollama)
+  # OPCIÓN A (gratis, local, SIN API key): ollama — usa el LLM de tu Mac
+  provider: "ollama"         # openai | ollama
+  model: "qwen3:8b"          # qwen3:8b (calidad) | llama3.2 (velocidad)
   max_scenes: 5               # máximo de escenas por video
   language: "es"              # idioma del guion y diálogo
-  api_key_env: "OPENAI_API_KEY"
+  api_key_env: "OPENAI_API_KEY"   # solo si provider=openai
   ollama_url: "http://localhost:11434"
 
 tts:
