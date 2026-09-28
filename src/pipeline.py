@@ -170,7 +170,12 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
     if avatar_path:
         avatar_path = Path(avatar_path).expanduser()
     else:
-        avatar_path = None
+        # Auto: usa el avatar más reciente de assets/avatars/ (si existe alguno)
+        avatars = sorted((assets_dir / "avatars").glob("*.png"),
+                         key=lambda p: p.stat().st_mtime)
+        avatar_path = avatars[-1] if avatars else None
+        if avatar_path:
+            logger.info("[AVATAR] Avatar por defecto (el más reciente): %s", avatar_path.name)
 
     resolution = comp_cfg.get("output_resolution", "1920x1080")
     fps = comp_cfg.get("fps", 30)
