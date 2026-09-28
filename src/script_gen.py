@@ -88,19 +88,19 @@ class ScriptGenerator:
         return scenes
 
     def _call_ollama(self, prompt: str) -> str:
-        """Llama a Ollama local para generación de guion."""
+        """Llama a Ollama local para generación de guion (endpoint /api/chat)."""
         import urllib.request
         import json as _json
         data = _json.dumps({
             "model": self.model,
-            "prompt": prompt,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }).encode()
         req = urllib.request.Request(
-            f"{self._ollama_url}/api/generate",
+            f"{self._ollama_url}/api/chat",
             data=data,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=600) as resp:
             result = _json.loads(resp.read())
-        return result["response"].strip()
+        return result["message"]["content"].strip()

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import soundfile as sf
@@ -17,11 +18,18 @@ class TTSEngine:
 
     def __init__(self, model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
                  language: str = "es", speaker_wav: str | None = None,
-                 device: str | None = None):
+                 device: str | None = None, tos_agreed: bool = True,
+                 default_speaker: str | None = "angelina"):
         self.model_name = model_name
         self.language = language
         self.speaker_wav = speaker_wav
+        self.default_speaker = default_speaker
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        # XTTS v2 está bajo licencia CPML (no comercial). Si tos_agreed=True,
+        # se acepta el ToS de forma no interactiva antes de cargar el modelo.
+        if tos_agreed:
+            os.environ.setdefault("COQUI_TOS_AGREED", "1")
 
         logger.info("[TTS] Cargando modelo %s en %s", model_name, self.device)
         from TTS.api import TTS
@@ -50,9 +58,12 @@ class TTSEngine:
                 language=self.language, file_path=str(path),
             )
         else:
-            logger.info("[TTS] Generando audio (voz por defecto): %s", text[:60])
+            logger.info("[TTS] Generando audio (speaker por defecto: %s): %s",
+                        self.default_speaker, text[:60])
             self.tts.tts_to_file(
-                text=text, language=self.language,
+                text=text,
+                speaker=self.default_speaker,
+                language=self.language,
                 file_path=str(path),
             )
 

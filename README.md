@@ -82,7 +82,7 @@ python src/pipeline.py \
 | Parámetro | Descripción | Valores |
 |-----------|-------------|---------|
 | `--prompt` | Texto de entrada para generar el video | requerido |
-| `--quality` | Calidad del lip-sync | `fast` (MuseTalk), `balanced` (auto), `high` (LatentSync) |
+| `--quality` | Calidad del lip-sync | `none` (sin lip-sync, video+audio), `fast` (MuseTalk), `balanced` (auto), `high` (LatentSync) |
 | `--avatar` | Ruta a imagen PNG de avatar | opcional |
 | `--config` | Ruta al archivo de configuración YAML | default: `configs/pipeline.yaml` |
 
@@ -132,11 +132,12 @@ Editar `configs/pipeline.yaml`:
 
 ## Notas importantes
 
-1. **LatentSync** requiere ~18 GB VRAM para la versión 1.6 (calidad máxima)
-2. **MuseTalk** funciona con ~8 GB VRAM y es 3-5x más rápido
-3. **Coqui TTS** descarga automáticamente el modelo XTTS v2 (~2 GB) la primera vez
-4. El primer ejecución puede tardar varios minutos en descargar modelos
-5. Para macOS sin GPU NVIDIA, usar `--quality fast` con MuseTalk o FaceFusion
+1. **LatentSync** requiere GPU NVIDIA (CUDA) — NO corre en Mac Apple Silicon
+2. **MuseTalk** funciona con CPU (fallback) — viable en Mac, aunque lento
+3. En Mac sin GPU NVIDIA: usa `--quality none` (video+audio sin lip-sync) o `--quality fast` (MuseTalk)
+4. **Coqui TTS (XTTS v2)** licencia CPML = **uso no comercial**. Para proyectos comerciales, pide licencia a Coqui o usa un TTS con licencia comercial
+5. El guion usa **Ollama local por defecto** (sin API key). Cambia `llm.provider` a `openai` si prefieres GPT
+6. El speaker de voz por defecto es **"Alma María"** (español). Cambia en `configs/pipeline.yaml` o usa `speaker_wav` para clonar otra voz
 
 ## Licencia
 

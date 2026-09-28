@@ -22,8 +22,8 @@ class Compositor:
         self.crf = crf
         self.audio_codec = audio_codec
         self.transition_sec = transition_duration
-        logger.info("[COMP] Compositor configurado: %sx%s @ %dfps",
-                     output_resolution, self.fps)
+        logger.info("[COMP] Compositor configurado: %s @ %dfps",
+                    output_resolution, fps)
 
     def build_final_video(self, scenes: list[dict], assets_dir: str,
                           output_path: str) -> Path:

@@ -35,33 +35,39 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def generate_base_video(video_path: Path, duration_sec: float, resolution: str, fps: int):
+def generate_base_video(video_path: Path, avatar_path: Path,
+                        duration_sec: float, resolution: str, fps: int):
     """
-    Genera un video base desde una imagen de avatar usando FFmpeg.
-    En producción, reemplazar con SadTalker o MuseV.
+    Genera un video base a partir de la imagen del avatar usando FFmpeg:
+    la imagen se centra y llena el encuadre (scale + crop + loop).
+    En producción, sustituir por SadTalker/MuseV para movimiento facial.
     """
     video_path.parent.mkdir(parents=True, exist_ok=True)
+    w, h = resolution.split("x")
 
-    # Si hay avatar, usarlo como fondo; si no, pantalla negra
+    # Redimensiona el avatar para cubrir el encuadre y recorta al centro
+    scale_filter = (f"scale=w='max({w},iw)':h='max({h},ih)':force_original_aspect_ratio=increase,"
+                    f"crop={w}:{h}:0:0,setsar=1")
     cmd = [
         "ffmpeg", "-y",
-        "-loop", "1",
-        "-i", str(video_path.with_suffix(".png")),  # avatar.png
+        "-loop", "1", "-i", str(avatar_path),
         "-t", str(duration_sec),
+        "-vf", scale_filter,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(fps),
-        "-vf", f"scale={resolution}",
+        "-shortest",
         str(video_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        # Fallback: video negro si no hay avatar
-        cmd = [
+        # Fallback: video negro si falla el avatar
+        logger.warning("[AVATAR] Falló video con avatar (%s). Video negro.",
+                      result.stderr[-200:])
+        subprocess.run([
             "ffmpeg", "-y", "-f", "lavfi", "-i",
-            f"color=c=black:s={resolution}:d={duration_sec}:r={fps}",
+            f"color=c=black:s={w}x{h}:d={duration_sec}:r={fps}",
             "-c:v", "libx264", "-pix_fmt", "yuv420p",
             str(video_path),
-        ]
-        subprocess.run(cmd, check=False)
+        ], capture_output=True)
     logger.info("[AVATAR] Video base generado: %s (%.1fs)", video_path.name, duration_sec)
 
 
@@ -86,6 +92,8 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         ls_engine = "latentsync"
     elif quality == "fast":
         ls_engine = "musetalk"
+    elif quality == "none":
+        ls_engine = "none"
     else:
         ls_engine = ls_cfg.get("engine", "latentsync")
 
@@ -98,6 +106,7 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         model_name=tts_cfg.get("model", "tts_models/multilingual/multi-dataset/xtts_v2"),
         language=tts_cfg.get("language", "es"),
         speaker_wav=tts_cfg.get("speaker_wav"),
+        default_speaker=tts_cfg.get("speaker", "Alma María"),
     )
 
     comp = Compositor(**comp_cfg)
@@ -108,19 +117,23 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         logger.info("[INIT] Motor lip-sync: LatentSync (%s)", models_dir)
         lipsync = LatentSyncEngine(
             repo_root=models_dir,
-            inference_steps=ls_cfg.get("inference_steps", 30),
-            resize=ls_cfg.get("resize", 512),
-            pad_top=ls_cfg.get("pad_top", 15),
-            pad_bottom=ls_cfg.get("pad_bottom", 10),
+            inference_steps=ls_cfg.get("inference_steps", 20),
+            guidance_scale=ls_cfg.get("guidance_scale", 1.5),
+            enable_deepcache=ls_cfg.get("enable_deepcache", True),
         )
-    else:
+    elif ls_engine == "musetalk":
         muse_root = str(Path("~/proyectos/MuseTalk").expanduser())
         logger.info("[INIT] Motor lip-sync: MuseTalk (%s)", muse_root)
         lipsync = MuseTalkEngine(
             repo_root=muse_root,
-            face_template=ls_cfg.get("face_template", "hubert_face"),
-            use_exp_detection=ls_cfg.get("use_exp_detection", True),
+            version=ls_cfg.get("version", "v1.5"),
+            use_float16=ls_cfg.get("use_float16", False),
+            bbox_shift=ls_cfg.get("bbox_shift", 0),
         )
+    else:
+        # "none": sin lip-sync (video base + audio, para pruebas o sin GPU)
+        logger.info("[INIT] Sin motor de lip-sync (engine=none).")
+        lipsync = None
 
     # ── Directorios ──
     assets_dir = Path(paths["assets_dir"]).expanduser()
@@ -166,7 +179,7 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         dur = scene["duration"]
         base_vid = base_dir / f"scene_{i:02d}.mp4"
         if avatar_path and avatar_path.exists():
-            generate_base_video(base_vid, dur, resolution, fps)
+            generate_base_video(base_vid, avatar_path, dur, resolution, fps)
         else:
             # Video negro como placeholder
             subprocess.run([
@@ -189,12 +202,17 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         audio = scene["audio"]
         synced_vid = synced_dir / f"scene_{i:02d}.mp4"
 
-        try:
-            lipsync.sync(base_vid, audio, str(synced_vid))
-        except Exception as e:
-            logger.error("  Escena %d falló lip-sync: %s. Usando video base.", i + 1, e)
-            # Fallback: copiar video base si falla lip-sync
+        if lipsync is None:
+            # Sin lip-sync: copiar el video base tal cual
             subprocess.run(["cp", base_vid, str(synced_vid)], check=False)
+            logger.info("  Escena %d: sin lip-sync (usando video base).", i + 1)
+        else:
+            try:
+                lipsync.sync(base_vid, audio, str(synced_vid))
+            except Exception as e:
+                logger.error("  Escena %d falló lip-sync: %s. Usando video base.", i + 1, e)
+                # Fallback: copiar video base si falla lip-sync
+                subprocess.run(["cp", base_vid, str(synced_vid)], check=False)
 
         scene["lip_synced_video"] = str(synced_vid)
         logger.info("  Escena %d: lip-sync completado.", i + 1)
@@ -222,8 +240,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline Texto → Video con Lip-Sync")
     parser.add_argument("--prompt", required=True, help="Prompt de texto para generar el video")
     parser.add_argument("--config", default="configs/pipeline.yaml", help="Ruta al config YAML")
-    parser.add_argument("--quality", choices=["fast", "balanced", "high"], default="balanced",
-                        help="fast=MuseTalk, balanced=auto, high=LatentSync")
+    parser.add_argument("--quality", choices=["none", "fast", "balanced", "high"], default="balanced",
+                        help="none=sin lip-sync, fast=MuseTalk, balanced=auto, high=LatentSync")
     parser.add_argument("--avatar", default=None, help="Ruta a imagen de avatar PNG (opcional)")
     args = parser.parse_args()
 
