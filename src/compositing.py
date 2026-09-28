@@ -26,13 +26,20 @@ class Compositor:
                     output_resolution, fps)
 
     def build_final_video(self, scenes: list[dict], assets_dir: str,
-                          output_path: str) -> Path:
+                          output_path: str,
+                          scene_audio_source: str = "tts") -> Path:
         """
         Construye el video final uniendo todas las escenas.
 
         Cada scene debe tener:
           - lip_synced_video: ruta al video con lip-sync
-          - audio: ruta al audio de la escena
+          - audio: ruta al audio de la escena (solo si scene_audio_source="tts")
+
+        scene_audio_source:
+          - "tts":   mezcla el audio TTS de la escena (comportamiento original).
+          - "model": usa el audio SINCERIZADO del propio video (modo Agnes).
+            (Por escena, se puede forzar "tts" con scene["use_model_audio"]=False,
+            p. ej. cuando la escena quedó en video negro de emergencia.)
         """
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -42,19 +49,26 @@ class Compositor:
         mixed_clips = []
         for i, scene in enumerate(scenes):
             lip_vid = self._resolve(assets, scene.get("lip_synced_video", ""))
-            audio = self._resolve(assets, scene.get("audio", ""))
 
             if not lip_vid.exists():
                 logger.warning("[COMP] AVISO: video no encontrado para escena %d: %s", i, lip_vid)
                 continue
-            if not audio.exists():
-                logger.warning("[COMP] AVISO: audio no encontrado para escena %d: %s", i, audio)
-                continue
 
             mixed = out.parent / f"mixed_scene_{i:02d}.mp4"
-            self._mix_scene(lip_vid, audio, mixed)
+            use_model = scene_audio_source == "model" and scene.get("use_model_audio", True)
+
+            if use_model:
+                self._mix_scene_model_audio(lip_vid, mixed)
+            else:
+                audio = self._resolve(assets, scene.get("audio", ""))
+                if not audio.exists():
+                    logger.warning("[COMP] AVISO: audio no encontrado para escena %d: %s", i, audio)
+                    continue
+                self._mix_scene(lip_vid, audio, mixed)
+
             mixed_clips.append(mixed)
-            logger.info("[COMP] Escena %d mezclada: %s", i + 1, mixed.name)
+            logger.info("[COMP] Escena %d mezclada (%s): %s",
+                        i + 1, "audio-modelo" if use_model else "tts", mixed.name)
 
         if len(mixed_clips) < 1:
             raise RuntimeError("No hay clips válidos para compilar.")
@@ -89,6 +103,33 @@ class Compositor:
             return cand
         # Fallback: devolver la interpretación más probable para el mensaje de error
         return cand
+
+    def _mix_scene_model_audio(self, video: Path, output: Path):
+        """Usa el audio SINCERIZADO del propio video (modo Agnes).
+
+        El video ya trae su pista de audio (voz+ambiente del modelo), así que
+        solo la recodificamos a AAC. Si por algún fallo no hubiera pista de
+        audio, seguimos el video mudo (mejor que romper el pipeline).
+        """
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", str(video),
+            "-map", "0:v:0",
+            "-map", "0:a?",
+            "-c:v", "libx264", "-crf", str(self.crf),
+            "-c:a", self.audio_codec,
+            str(output),
+        ], capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.warning("[COMP] Sin audio en %s; usando mudo. %s",
+                           video.name, result.stderr[-300:])
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-i", str(video),
+                "-an",
+                "-c:v", "libx264", "-crf", str(self.crf),
+                str(output),
+            ], check=True, capture_output=True)
 
     def _mix_scene(self, video: Path, audio: Path, output: Path):
         """Mezcla video lip-synced con su audio."""

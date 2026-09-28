@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -33,6 +35,24 @@ def load_config(config_path: str) -> dict:
     """Carga configuración desde YAML."""
     with open(config_path) as f:
         return yaml.safe_load(f)
+
+
+def load_dotenv(project_root: Path | None = None) -> None:
+    """Carga KEY=VALUE del .env del proyecto sin pisar variables ya existentes.
+
+    Así la app de escritorio (que hereda un entorno limpio) encuentra la
+    clave AGNES_API_KEY aunque no esté exportada en el shell.
+    """
+    root = project_root or Path(__file__).resolve().parent.parent
+    env_file = root / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
 
 
 def generate_base_video(video_path: Path, avatar_path: Path,
@@ -73,6 +93,7 @@ def generate_base_video(video_path: Path, avatar_path: Path,
 
 def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
     """Ejecuta el pipeline completo."""
+    load_dotenv()
 
     print("=" * 60)
     print("  PIPELINE: TEXTO → VIDEO CON LIP-SYNC")
@@ -92,6 +113,8 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         ls_engine = "latentsync"
     elif quality == "fast":
         ls_engine = "musetalk"
+    elif quality == "agvideo":
+        ls_engine = "agnes"
     elif quality == "none":
         ls_engine = "none"
     else:
@@ -135,6 +158,16 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         logger.info("[INIT] Sin motor de lip-sync (engine=none).")
         lipsync = None
 
+    agnes = None
+    if ls_engine == "agnes":
+        from agnes_video import AgnesVideoEngine, QueueFullError
+        scene_audio_source = "model"
+        logger.info("[INIT] Motor de video: Agnes (%s). Audio por el modelo "
+                    "(voz+ambiente sincronizados).", AgnesVideoEngine.model)
+        agnes = AgnesVideoEngine()
+    else:
+        scene_audio_source = "tts"
+
     # ── Directorios ──
     assets_dir = Path(paths["assets_dir"]).expanduser().resolve()
     output_dir = Path(paths["output_dir"]).expanduser().resolve()
@@ -147,77 +180,136 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
     scenes = script_gen.generate(prompt)
 
     # ── FASE 2: Generar audio ──
-    logger.info("=" * 40)
-    logger.info("FASE 2/5: Generando audio con Coqui TTS...")
-    audios_dir = assets_dir / "audios"
-    audios_dir.mkdir(parents=True, exist_ok=True)
+    if agnes and scene_audio_source == "model":
+        # El audio lo aporta el propio video de Agnes: estimamos duraciones.
+        logger.info("=" * 40)
+        logger.info("FASE 2/5: Audio por el modelo de Agnes (sin TTS)...")
+        for i, scene in enumerate(scenes):
+            scene["duration"] = min(12.0, max(4.0, len(scene["dialogue"].split()) / 2.5 + 1))
+            logger.info("  Escena %d: ~%.1fs estimados — %s",
+                        i + 1, scene["duration"], scene["dialogue"][:50])
+    else:
+        logger.info("=" * 40)
+        logger.info("FASE 2/5: Generando audio con Coqui TTS...")
+        audios_dir = assets_dir / "audios"
+        audios_dir.mkdir(parents=True, exist_ok=True)
 
-    for i, scene in enumerate(scenes):
-        audio_path = audios_dir / f"scene_{i:02d}.wav"
-        tts.generate(scene["dialogue"], str(audio_path))
-        duration = tts.get_duration(str(audio_path))
-        scene["audio"] = str(audio_path)
-        scene["duration"] = duration
-        logger.info("  Escena %d: %.1fs — %s", i + 1, duration, scene["dialogue"][:50])
+        for i, scene in enumerate(scenes):
+            audio_path = audios_dir / f"scene_{i:02d}.wav"
+            tts.generate(scene["dialogue"], str(audio_path))
+            duration = tts.get_duration(str(audio_path))
+            scene["audio"] = str(audio_path)
+            scene["duration"] = duration
+            logger.info("  Escena %d: %.1fs — %s", i + 1, duration, scene["dialogue"][:50])
 
     # ── FASE 3: Video base ──
-    logger.info("=" * 40)
-    logger.info("FASE 3/5: Preparando video base...")
-    base_dir = assets_dir / "videos_base"
-    base_dir.mkdir(parents=True, exist_ok=True)
-
-    avatar_path = paths.get("default_avatar")
-    if avatar_path:
-        avatar_path = Path(avatar_path).expanduser()
+    # (Omitida en modo Agnes: el video se genera directamente en FASE 4)
+    if agnes:
+        logger.info("=" * 40)
+        logger.info("FASE 3/5: Video base omitido (modo Agnes)...")
     else:
-        # Auto: usa el avatar más reciente de assets/avatars/ (si existe alguno)
-        avatars = sorted((assets_dir / "avatars").glob("*.png"),
-                         key=lambda p: p.stat().st_mtime)
-        avatar_path = avatars[-1] if avatars else None
+        logger.info("=" * 40)
+        logger.info("FASE 3/5: Preparando video base...")
+        base_dir = assets_dir / "videos_base"
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        avatar_path = paths.get("default_avatar")
         if avatar_path:
-            logger.info("[AVATAR] Avatar por defecto (el más reciente): %s", avatar_path.name)
-
-    resolution = comp_cfg.get("output_resolution", "1920x1080")
-    fps = comp_cfg.get("fps", 30)
-
-    for i, scene in enumerate(scenes):
-        dur = scene["duration"]
-        base_vid = base_dir / f"scene_{i:02d}.mp4"
-        if avatar_path and avatar_path.exists():
-            generate_base_video(base_vid, avatar_path, dur, resolution, fps)
+            avatar_path = Path(avatar_path).expanduser()
         else:
-            # Video negro como placeholder
-            subprocess.run([
-                "ffmpeg", "-y", "-f", "lavfi", "-i",
-                f"color=c=black:s={resolution}:d={dur}:r={fps}",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                str(base_vid),
-            ], capture_output=True)
-        scene["video_base"] = str(base_vid)
-        logger.info("  Escena %d: video base (%.1fs)", i + 1, dur)
+            # Auto: usa el avatar más reciente de assets/avatars/ (si existe alguno)
+            avatars = sorted((assets_dir / "avatars").glob("*.png"),
+                             key=lambda p: p.stat().st_mtime)
+            avatar_path = avatars[-1] if avatars else None
+            if avatar_path:
+                logger.info("[AVATAR] Avatar por defecto (el más reciente): %s", avatar_path.name)
 
-    # ── FASE 4: Lip-Sync ──
+        resolution = comp_cfg.get("output_resolution", "1920x1080")
+        fps = comp_cfg.get("fps", 30)
+
+        for i, scene in enumerate(scenes):
+            dur = scene["duration"]
+            base_vid = base_dir / f"scene_{i:02d}.mp4"
+            if avatar_path and avatar_path.exists():
+                generate_base_video(base_vid, avatar_path, dur, resolution, fps)
+            else:
+                # Video negro como placeholder
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "lavfi", "-i",
+                    f"color=c=black:s={resolution}:d={dur}:r={fps}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    str(base_vid),
+                ], capture_output=True)
+            scene["video_base"] = str(base_vid)
+            logger.info("  Escena %d: video base (%.1fs)", i + 1, dur)
+
+    # ── FASE 4: Lip-Sync / Video IA ──
     logger.info("=" * 40)
     logger.info("FASE 4/5: Aplicando lip-sync (%s)...", ls_engine)
     synced_dir = assets_dir / "videos_synced"
     synced_dir.mkdir(parents=True, exist_ok=True)
 
     for i, scene in enumerate(scenes):
-        base_vid = scene["video_base"]
-        audio = scene["audio"]
         synced_vid = synced_dir / f"scene_{i:02d}.mp4"
 
-        if lipsync is None:
-            # Sin lip-sync: copiar el video base tal cual
-            subprocess.run(["cp", base_vid, str(synced_vid)], check=False)
-            logger.info("  Escena %d: sin lip-sync (usando video base).", i + 1)
+        if agnes:
+            # Video realista por escena vía API de Agnes (audio sincronizado).
+            agnes.download_dir = synced_dir
+            prompt_escena = (
+                f"{scene.get('visual_note', 'una persona')}; "
+                f"la persona mira a cámara y dice en voz clara: «{scene['dialogue']}»"
+            )
+            gen_path = synced_dir / f"scene_{i:02d}.mp4"
+            ok = False
+            for intento in (1, 2):
+                try:
+                    agnes.generate(
+                        prompt_escena,
+                        seconds=int(scene["duration"]),
+                        out_path=gen_path,
+                    )
+                    ok = True
+                    break
+                except QueueFullError:
+                    logger.warning("  Escena %d: cola de Agnes llena (intento %d/2); "
+                                   "esperando 30s...", i + 1, intento)
+                    time.sleep(30)
+            if ok:
+                logger.info("  Escena %d: video Agnes generado (%.1fs).",
+                            i + 1, scene["duration"])
+            else:
+                logger.error("  Escena %d falló en Agnes (cola llena 2 veces). "
+                             "Video negro + audio TTS de emergencia.", i + 1)
+                resolution = comp_cfg.get("output_resolution", "1920x1080")
+                fps = comp_cfg.get("fps", 30)
+                subprocess.run([
+                    "ffmpeg", "-y", "-f", "lavfi", "-i",
+                    f"color=c=black:s={resolution}:d={scene['duration']}:r={fps}",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-an", str(gen_path),
+                ], capture_output=True)
+                # Audio de emergencia con TTS para que no quede muda
+                audios_dir = assets_dir / "audios"
+                audios_dir.mkdir(parents=True, exist_ok=True)
+                ap = audios_dir / f"scene_{i:02d}.wav"
+                tts.generate(scene["dialogue"], str(ap))
+                scene["audio"] = str(ap)
+                scene["use_model_audio"] = False
+                scene_audio_source = "tts"
         else:
-            try:
-                lipsync.sync(base_vid, audio, str(synced_vid))
-            except Exception as e:
-                logger.error("  Escena %d falló lip-sync: %s. Usando video base.", i + 1, e)
-                # Fallback: copiar video base si falla lip-sync
+            base_vid = scene["video_base"]
+            audio = scene["audio"]
+            if lipsync is None:
+                # Sin lip-sync: copiar el video base tal cual
                 subprocess.run(["cp", base_vid, str(synced_vid)], check=False)
+                logger.info("  Escena %d: sin lip-sync (usando video base).", i + 1)
+            else:
+                try:
+                    lipsync.sync(base_vid, audio, str(synced_vid))
+                except Exception as e:
+                    logger.error("  Escena %d falló lip-sync: %s. Usando video base.", i + 1, e)
+                    # Fallback: copiar video base si falla lip-sync
+                    subprocess.run(["cp", base_vid, str(synced_vid)], check=False)
 
         scene["lip_synced_video"] = str(synced_vid)
         logger.info("  Escena %d: lip-sync completado.", i + 1)
@@ -228,7 +320,10 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     final_path = output_dir / f"video_final_{timestamp}.mp4"
 
-    final_video = comp.build_final_video(scenes, str(assets_dir), str(final_path))
+    final_video = comp.build_final_video(
+        scenes, str(assets_dir), str(final_path),
+        scene_audio_source=scene_audio_source,
+    )
 
     # ── Resumen ──
     print("\n" + "=" * 60)
@@ -245,8 +340,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline Texto → Video con Lip-Sync")
     parser.add_argument("--prompt", required=True, help="Prompt de texto para generar el video")
     parser.add_argument("--config", default="configs/pipeline.yaml", help="Ruta al config YAML")
-    parser.add_argument("--quality", choices=["none", "fast", "balanced", "high"], default="balanced",
-                        help="none=sin lip-sync, fast=MuseTalk, balanced=auto, high=LatentSync")
+    parser.add_argument("--quality",
+                        choices=["none", "fast", "balanced", "high", "agvideo"],
+                        default="balanced",
+                        help="none=sin lip-sync, fast=MuseTalk, balanced=auto, "
+                             "high=LatentSync, agvideo=video IA por la API de Agnes "
+                             "(audio sincronizado, sin GPU local)")
     parser.add_argument("--avatar", default=None, help="Ruta a imagen de avatar PNG (opcional)")
     args = parser.parse_args()
 

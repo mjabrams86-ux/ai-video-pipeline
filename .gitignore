@@ -15,3 +15,5 @@ output/
 .DS_Store
 *.log
 venv-new-desactivado-*/
+.env
+*.bak-*

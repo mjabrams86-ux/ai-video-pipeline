@@ -61,12 +61,13 @@ def _validate(scenes: Any) -> list[dict[str, Any]]:
 
 
 class ScriptGenerator:
-    """Genera guiones estructurados usando OpenAI o Ollama local."""
+    """Genera guiones estructurados usando OpenAI, Agnes o Ollama local."""
 
     def __init__(self, provider: str = "openai", model: str = "gpt-4o",
                  max_scenes: int = 5, language: str = "es",
                  api_key_env: str = "OPENAI_API_KEY",
                  ollama_url: str = "http://localhost:11434",
+                 base_url: str | None = None,
                  max_retries: int = 3):
         self.provider = provider
         self.model = model
@@ -82,6 +83,21 @@ class ScriptGenerator:
                 raise ValueError(f"Variable de entorno {api_key_env} no configurada")
             from openai import OpenAI
             self.client = OpenAI(api_key=api_key)
+        elif provider == "agnes":
+            # API de Agnes (compatible OpenAI): solo cambia la base_url.
+            api_key = os.environ.get(api_key_env or "AGNES_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    f"Variable de entorno {api_key_env or 'AGNES_API_KEY'} no "
+                    "configurada. Ponla en .env del proyecto."
+                )
+            from openai import OpenAI
+            defaults = {
+                "model": "agnes-3.0-flash",
+                "base_url": "https://apihub.agnes-ai.com/v1",
+            }
+            self.model = model or defaults["model"]
+            self.client = OpenAI(api_key=api_key, base_url=base_url or defaults["base_url"])
         elif provider != "ollama":
             raise ValueError(f"Provider no soportado: {provider}")
 
@@ -109,8 +125,8 @@ class ScriptGenerator:
         raise RuntimeError(f"ScriptGen falló tras {self.max_retries} intentos: {last_err}")
 
     def _call_llm(self, template: str) -> str:
-        """Llama al LLM (OpenAI u Ollama) y devuelve el texto crudo."""
-        if self.provider == "openai":
+        """Llama al LLM (OpenAI/Agnes o Ollama) y devuelve el texto crudo."""
+        if self.client is not None:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": template}],
