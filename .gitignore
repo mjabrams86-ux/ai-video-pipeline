@@ -14,3 +14,4 @@ assets/audios/
 output/
 .DS_Store
 *.log
+venv-new-desactivado-*/
