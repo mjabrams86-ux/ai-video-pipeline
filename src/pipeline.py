@@ -136,8 +136,8 @@ def run_pipeline(prompt: str, config: dict, quality: str = "balanced"):
         lipsync = None
 
     # ── Directorios ──
-    assets_dir = Path(paths["assets_dir"]).expanduser()
-    output_dir = Path(paths["output_dir"]).expanduser()
+    assets_dir = Path(paths["assets_dir"]).expanduser().resolve()
+    output_dir = Path(paths["output_dir"]).expanduser().resolve()
     assets_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 

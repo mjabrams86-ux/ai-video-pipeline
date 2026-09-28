@@ -8,7 +8,7 @@ pipeline:
 llm:
   # OPCIÓN A (gratis, local, SIN API key): ollama — usa el LLM de tu Mac
   provider: "ollama"         # openai | ollama
-  model: "qwen3.8-27b-iq2xs"  # modelo único disponible ahora en tu Ollama
+  model: "qwen3.5:4b"           # pequeño, rápido, ideal para guiones en Mac 16GB
   max_scenes: 3               # máximo de escenas por video
   language: "es"              # idioma del guion y diálogo
   api_key_env: "OPENAI_API_KEY"   # solo si provider=openai

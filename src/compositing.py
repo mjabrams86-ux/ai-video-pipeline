@@ -36,13 +36,13 @@ class Compositor:
         """
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        assets = Path(assets_dir)
+        assets = Path(assets_dir).resolve()
 
         # 1. Mezclar video lip-synced + audio por escena
         mixed_clips = []
         for i, scene in enumerate(scenes):
-            lip_vid = assets / scene.get("lip_synced_video", "")
-            audio = assets / scene.get("audio", "")
+            lip_vid = self._resolve(assets, scene.get("lip_synced_video", ""))
+            audio = self._resolve(assets, scene.get("audio", ""))
 
             if not lip_vid.exists():
                 logger.warning("[COMP] AVISO: video no encontrado para escena %d: %s", i, lip_vid)
@@ -51,7 +51,7 @@ class Compositor:
                 logger.warning("[COMP] AVISO: audio no encontrado para escena %d: %s", i, audio)
                 continue
 
-            mixed = assets / f"mixed_scene_{i:02d}.mp4"
+            mixed = out.parent / f"mixed_scene_{i:02d}.mp4"
             self._mix_scene(lip_vid, audio, mixed)
             mixed_clips.append(mixed)
             logger.info("[COMP] Escena %d mezclada: %s", i + 1, mixed.name)
@@ -68,6 +68,27 @@ class Compositor:
 
         logger.info("[COMP] Video final guardado: %s", out)
         return out
+
+    @staticmethod
+    def _resolve(base_dir: Path, p: str) -> Path:
+        """
+        Resuelve la ruta de una escena de forma robusta:
+        - si es absoluta, la usa tal cual;
+        - si es relativa y existe desde cwd, la resuelve;
+        - si no, la interpreta como relativa a base_dir (assets).
+        """
+        if not p:
+            return base_dir / ""
+        pp = Path(p)
+        if pp.is_absolute():
+            return pp
+        if pp.exists():
+            return pp.resolve()
+        cand = base_dir / pp
+        if cand.exists():
+            return cand
+        # Fallback: devolver la interpretación más probable para el mensaje de error
+        return cand
 
     def _mix_scene(self, video: Path, audio: Path, output: Path):
         """Mezcla video lip-synced con su audio."""
