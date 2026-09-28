@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.mp4
+*.wav
+*.png
+assets/videos_base/
+assets/videos_synced/
+assets/audios/
+output/
+.DS_Store
+*.log

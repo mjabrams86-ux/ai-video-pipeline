@@ -1,0 +1,50 @@
+# Configuración del pipeline
+# Modificar según tu hardware y preferencias
+
+pipeline:
+  name: "texto-a-video-lipsync"
+  version: "1.0"
+
+llm:
+  provider: "openai"          # openai | ollama
+  model: "gpt-4o"             # gpt-4o | gpt-4-turbo | llama3 (ollama)
+  max_scenes: 5               # máximo de escenas por video
+  language: "es"              # idioma del guion y diálogo
+  api_key_env: "OPENAI_API_KEY"
+  ollama_url: "http://localhost:11434"
+
+tts:
+  engine: "coqui"             # coqui | elevenlabs
+  model: "tts_models/multilingual/multi-dataset/xtts_v2"
+  language: "es"
+  speaker_wav: null           # ruta a audio de referencia para voice cloning (opcional)
+
+lipsync:
+  # engine: latentsync | musetalk
+  # high quality → latentsync (requiere GPU con ≥12GB VRAM)
+  # fast → musetalk (más rápido, menor resolución)
+  engine: "latentsync"
+  # LatentSync settings
+  inference_steps: 30
+  resize: 512
+  pad_top: 15
+  pad_bottom: 10
+  # MuseTalk settings (only if engine=musetalk)
+  face_template: "hubert_face"
+  use_exp_detection: true
+
+compositing:
+  output_resolution: "1920x1080"
+  fps: 30
+  codec: "libx264"
+  crf: 18                     # 18=alta calidad, 23=normal, 28=baja
+  audio_codec: "aac"
+  transition_duration: 0.5    # segundos de crossfade entre escenas
+
+paths:
+  assets_dir: "./assets"
+  output_dir: "./output"
+  # Ruta al repositorio LatentSync clonado
+  models_dir: "~/proyectos/LatentSync"
+  # Ruta opcional a avatar PNG (se usa para video base)
+  default_avatar: null
